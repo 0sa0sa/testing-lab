@@ -44,6 +44,7 @@ export interface DecisionTable {
 }
 
 export interface EqClass {
+  input: string;
   name: string;
   valid: boolean;
   values: Literal[];
@@ -53,7 +54,7 @@ export interface EqClass {
 }
 
 export interface EquivalenceTable {
-  input: string;
+  name: string;
   classes: EqClass[];
   line: number;
 }

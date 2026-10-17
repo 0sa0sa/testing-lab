@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, mkdirSy
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { parseSpec } from './parse.ts';
 import { expand } from './expand.ts';
-import { emitCasesMd, emitTest } from './emit.ts';
+import { emitCasesMd, emitSummaryMd, emitTest } from './emit.ts';
 import type { Diagnostic } from './types.ts';
 
 const args = process.argv.slice(2);
@@ -36,7 +36,8 @@ for (const file of targets.flatMap(collect)) {
   if (!existsSync(bindingPath)) { console.log(`エラー  ${rel}  binding が見つかりません: ${spec.binding}`); failed = true; continue; }
 
   const outputs: [string, string][] = [
-    [join(genDir, `${stem}.cases.md`), emitCasesMd(spec, res, diags, basename(file))],
+    [join(genDir, `${stem}.summary.md`), emitSummaryMd(spec, res, diags, basename(file))],
+    [join(genDir, `${stem}.cases.md`), emitCasesMd(spec, res, basename(file))],
     [join(genDir, `${stem}.test.ts`), emitTest(spec, cases, './' + relative(genDir, bindingPath).replace(/^\.\//, ''), basename(file))],
   ];
   for (const [path, content] of outputs) {

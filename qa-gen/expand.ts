@@ -44,7 +44,7 @@ function representative(p: Partition): number {
 
 /** セル → 受け付ける値の集合。"-" は全部 */
 function cellSet(cell: string, dom: Domain, line: number, col: string, diags: Diagnostic[]): string[] {
-  if (cell === '-') return dom.values;
+  if (cell === '-' || cell === 'すべて') return dom.values;
   const vals = cell.split(',').map((s) => s.trim()).map((s) => {
     const b = parseBool(s);
     return b === undefined ? s : b ? 'Y' : 'N';
@@ -126,31 +126,36 @@ function checkBoundary(bt: BoundaryTable, diags: Diagnostic[]) {
 }
 
 function checkEquivalence(spec: Spec, et: EquivalenceTable, dom: Record<string, Domain>, diags: Diagnostic[]) {
-  const def = spec.inputs[et.input];
-  if (!def) return;
-  const isValid = (v: Value) =>
-    def.type === 'enum' ? typeof v === 'string' && def.values.includes(v)
-    : def.type === 'bool' ? typeof v === 'boolean'
-    : typeof v === 'number' && Number.isInteger(v);
   const seen = new Map<string, string>();
   for (const c of et.classes) {
-    if (c.values.length === 0) diags.push({ level: 'error', line: c.line, message: `クラス「${c.name}」: 値がありません` });
+    const def = spec.inputs[c.input];
+    if (!def) continue;
+    const isValid = (v: Value) =>
+      def.type === 'enum' ? typeof v === 'string' && def.values.includes(v)
+      : def.type === 'bool' ? typeof v === 'boolean'
+      : typeof v === 'number' && Number.isInteger(v);
+    if (c.values.length === 0) diags.push({ level: 'error', line: c.line, message: `${c.input}「${c.name}」: 値がありません` });
     for (const lit of c.values) {
-      const key = JSON.stringify(lit);
-      if (seen.has(key)) diags.push({ level: 'error', line: c.line, message: `値 ${key} がクラス「${seen.get(key)}」と「${c.name}」の両方にあります` });
+      const key = `${c.input} ${JSON.stringify(lit)}`;
+      if (seen.has(key)) diags.push({ level: 'error', line: c.line, message: `${c.input} の値 ${'v' in lit ? JSON.stringify(lit.v) : '(なし)'} が「${seen.get(key)}」と「${c.name}」の両方にあります` });
       seen.set(key, c.name);
       const ok = 'v' in lit && isValid(lit.v);
-      if (c.valid && !ok) diags.push({ level: 'error', line: c.line, message: `有効クラス「${c.name}」の値 ${'v' in lit ? JSON.stringify(lit.v) : '(なし)'} は ${et.input} の型（${def.type}）に合いません` });
-      if (!c.valid && ok && def.type !== 'int') diags.push({ level: 'error', line: c.line, message: `無効クラス「${c.name}」の値 ${JSON.stringify((lit as { v: Value }).v)} は ${et.input} の正しい値です` });
+      if (c.valid && !ok) diags.push({ level: 'error', line: c.line, message: `${c.input}「${c.name}」は有効ですが、値 ${'v' in lit ? JSON.stringify(lit.v) : '(なし)'} は型（${def.type}）に合いません` });
+      if (!c.valid && ok && def.type !== 'int') diags.push({ level: 'error', line: c.line, message: `${c.input}「${c.name}」の値 ${JSON.stringify((lit as { v: Value }).v)} は正しい値です（不正な入力の表には書けません）` });
     }
   }
-  // enum の有効値は、有効クラスのどれかで一度は使う
-  if (def.type === 'enum') {
-    const used = new Set(et.classes.filter((c) => c.valid).flatMap((c) => c.values.map((l) => ('v' in l ? l.v : undefined))));
+  // enum を有効クラスで扱うなら、全値を一度は使う
+  for (const input of new Set(et.classes.filter((c) => c.valid).map((c) => c.input))) {
+    const def = spec.inputs[input];
+    if (def?.type !== 'enum') continue;
+    const used = new Set(et.classes.filter((c) => c.valid && c.input === input).flatMap((c) => c.values.map((l) => ('v' in l ? l.v : undefined))));
     const unused = def.values.filter((v) => !used.has(v));
-    if (unused.length) diags.push({ level: 'error', line: et.line, message: `equivalence ${et.input}: 有効クラスで使われていない値があります: ${unused.join(', ')}` });
+    if (unused.length) diags.push({ level: 'error', line: et.line, message: `${input}: 有効クラスで使われていない値があります: ${unused.join(', ')}` });
   }
-  if (!et.classes.some((c) => !c.valid)) diags.push({ level: 'warning', line: et.line, message: `equivalence ${et.input}: 無効クラスがありません` });
+  // 不正な入力の表に出てこない入力（int 以外）は警告
+  for (const [name, def] of Object.entries(spec.inputs)) {
+    if (!et.classes.some((c) => c.input === name && !c.valid)) diags.push({ level: 'warning', line: et.line, message: `「${et.name}」: ${name}（${def.type}）の不正な値が書かれていません` });
+  }
   void dom;
 }
 
@@ -280,7 +285,7 @@ function stateMatrix(sm: StateMachine): string[] {
     const cells = sm.events.map((ev) => sm.transitions.find((t) => t.from === s && t.event === ev)?.to ?? '×');
     lines.push(`| ${s === sm.initial ? '▶ ' : ''}${label(s)} | ${cells.join(' | ')} |`);
   }
-  lines.push('', '▶ = 初期状態、× = 無効（invalid_event の期待値で、状態は変わらない）');
+  lines.push('', '▶ = 初期状態、× = できない操作（状態は変わらず、エラーになる）');
   return lines;
 }
 
@@ -352,10 +357,10 @@ export function expand(spec: Spec, diags: Diagnostic[]): ExpandResult {
       for (const lit of c.values) {
         const input: Record<string, Value> = { ...spec.base };
         let shown: string;
-        if ('missing' in lit) { delete input[et.input]; shown = '(なし)'; } else { input[et.input] = lit.v; shown = JSON.stringify(lit.v); }
+        if ('missing' in lit) { delete input[c.input]; shown = '(なし)'; } else { input[c.input] = lit.v; shown = JSON.stringify(lit.v); }
         const kase: Case = {
-          id: `${et.input}:${c.name}=${shown}`,
-          source: `equivalence: ${et.input} / ${c.name}`,
+          id: `${c.input}:${c.name}=${shown}`,
+          source: `equivalence: ${et.name} / ${c.input} ${c.name}`,
           input, expected: { ...c.expected }, note: c.note, line: c.line,
         };
         if (!c.valid) {
@@ -397,8 +402,8 @@ export function expand(spec: Spec, diags: Diagnostic[]): ExpandResult {
       });
     });
     summaries[`pairwise: ${pt.name}`] = [
-      `因子 ${pt.factors.length} 個（${pt.factors.map((f, j) => `${f.input}: ${levels[j].join('/')}`).join('、')}）`,
-      `全組み合わせ ${res.full} 件 → ${res.rows.length} 件。2 因子間の組 ${res.pairs} 組をすべて含みます。期待値はディシジョンテーブルから引いています。`,
+      `${pt.factors.map((f, j) => `${f.input}（${levels[j].join('/')}）`).join(' × ')} の全 ${res.full} 通りを ${res.rows.length} 件に絞りました。`,
+      `どの 2 つの入力を選んでも、値の組 ${res.pairs} 組がすべて一度は出てきます。期待値はディシジョンテーブルから引いています。`,
     ];
   }
 
@@ -439,7 +444,7 @@ export function expand(spec: Spec, diags: Diagnostic[]): ExpandResult {
     summaries[`state: ${sm.name}`] = [
       ...stateMatrix(sm),
       '',
-      `${sm.switches}-switch 網羅: 有効遷移の列 ${valid} 件、無効遷移 ${sc.length - valid} 件。各ケースは初期状態から最短経路でたどり、途中の状態もすべて検査します。`,
+      `連続 ${sm.switches + 1} 回の有効な遷移 ${valid} 件と、× の操作 ${sc.length - valid} 件を検査します（${sm.switches}-switch 網羅）。各ケースは初期状態から最短の操作でたどり、途中の状態もすべて確かめます。`,
     ];
   }
 

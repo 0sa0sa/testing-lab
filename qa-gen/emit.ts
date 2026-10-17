@@ -1,4 +1,7 @@
-// 展開済みケース表（レビュー用 Markdown）とテストコードを書き出す
+// 生成物を書き出す
+//   summary.md  人が読む要約（表ごとのケース数、警告、組み合わせの結果、状態遷移表）
+//   cases.md    差分確認用の一覧（1 ケース 1 行。通読はしない）
+//   *.test.ts   テストコード
 import type { Case, Diagnostic, ExpandResult, Spec, Value } from './types.ts';
 
 const fmt = (v: Value | undefined) =>
@@ -6,58 +9,118 @@ const fmt = (v: Value | undefined) =>
 const esc = (s: string) => s.replace(/\|/g, '\\|');
 const group = (c: Case) => c.source.split(' / ')[0];
 
-export function emitCasesMd(spec: Spec, res: ExpandResult, diags: Diagnostic[], srcName: string): string {
+const TECHNIQUE: Record<string, string> = {
+  decision: 'ディシジョンテーブル',
+  boundary: '境界値',
+  equivalence: '不正な入力',
+  pairwise: '組み合わせ',
+  state: '状態遷移',
+};
+const HOW: Record<string, string> = {
+  decision: '「-」と複数値を全組み合わせに展開',
+  boundary: '各区間の両端。区間を使うルールの条件でも流す',
+  equivalence: '書いた値ごとに 1 件',
+  pairwise: '2 つの入力の組をすべて含む最小に近い組み合わせ',
+  state: '有効な遷移の列と、できない操作のすべて',
+};
+const groupTitle = (g: string) => {
+  const [kind, name] = g.split(': ');
+  const t = TECHNIQUE[kind] ?? kind;
+  return name === t ? t : `${t}: ${name}`;
+};
+
+/** 入力の表示。型どおりの値はそのまま、外れた値（不正な入力）は JSON で */
+function showInput(spec: Spec, k: string, c: Case): string {
+  if (!(k in c.input)) return '(なし)';
+  const v = c.input[k];
+  const def = spec.inputs[k];
+  const plain =
+    (def.type === 'enum' && typeof v === 'string' && def.values.includes(v)) ||
+    (def.type === 'bool' && typeof v === 'boolean') ||
+    (def.type === 'int' && typeof v === 'number' && Number.isInteger(v));
+  return plain ? fmt(v) : JSON.stringify(v);
+}
+
+/** 既定値から変えた入力だけを「k=v」で並べる */
+function changedInputs(spec: Spec, c: Case): string {
+  const parts = Object.keys(spec.inputs)
+    .filter((k) => !(k in c.input) || c.input[k] !== spec.base[k])
+    .map((k) => `${k}=${showInput(spec, k, c)}`);
+  return parts.length ? parts.join(', ') : '（既定値のまま）';
+}
+
+/** 期待値を「k=v」で並べる。「-」（出力なし）は省く */
+function showExpected(c: Case | { expected: Case['expected'] }): string {
+  const parts = Object.entries(c.expected).filter(([, v]) => v !== null).map(([k, v]) => `${k}=${fmt(v)}`);
+  return parts.length ? parts.join(', ') : '（出力なし）';
+}
+
+const header = (srcName: string, what: string) => [`<!-- 自動生成ファイルです。手で編集しないでください。元: ${srcName}（${what}） -->`, ''];
+
+export function emitSummaryMd(spec: Spec, res: ExpandResult, diags: Diagnostic[], srcName: string): string {
   const { cases, summaries } = res;
-  const inCols = Object.keys(spec.inputs);
-  const outCols = Object.keys(spec.outputs);
   const groups = [...new Set(cases.map(group))];
   const lines = [
-    `<!-- 自動生成ファイルです。手で編集しないでください。元: ${srcName} -->`,
+    ...header(srcName, '人が読む要約'),
+    `# ${spec.feature} — テストの要約`,
     '',
-    `# ${spec.feature} — 展開済みテストケース`,
+    `${cases.length} ケースを ${spec.layers.join(' と ')} の各層で実行します（計 ${cases.length * spec.layers.length} 件）。`,
     '',
-    `- ケース数: ${cases.length}（${groups.map((g) => `${g} ${cases.filter((c) => group(c) === g).length}`).join('、')}）`,
-    `- 層: ${spec.layers.join(', ')}（各層で同じケースを実行します）`,
+    '| 表 | ケース | 作り方 |',
+    '|---|--:|---|',
+    ...groups.map((g) => `| ${esc(groupTitle(g))} | ${cases.filter((c) => group(c) === g).length} | ${HOW[g.split(':')[0]] ?? ''} |`),
+    '',
   ];
-  if (inCols.length) lines.push(`- 表に出てこない入力の既定値: ${inCols.map((k) => `${k}=${fmt(spec.base[k])}`).join(', ')}`);
-  lines.push('');
   const warnings = diags.filter((d) => d.level === 'warning');
-  if (warnings.length) lines.push('## 警告', '', ...warnings.map((w) => `- ${w.line ? `L${w.line}: ` : ''}${w.message}`), '');
+  if (warnings.length) lines.push('## 警告', '', ...warnings.map((w) => `- ${w.line ? `${srcName}:${w.line} ` : ''}${w.message}`), '');
 
   for (const g of groups) {
     const gc = cases.filter((c) => group(c) === g);
-    lines.push(`## ${g}`, '');
-    if (summaries[g]) lines.push(...summaries[g], '');
+    const kind = g.split(':')[0];
+    if (kind === 'pairwise') {
+      lines.push(`## ${groupTitle(g)}`, '', ...(summaries[g] ?? []), '');
+      const factors = Object.keys(spec.inputs).filter((k) => gc.some((c) => c.input[k] !== spec.base[k]));
+      lines.push(`| # | ${factors.join(' | ')} | 期待値 |`, `|${Array(factors.length + 2).fill('---').join('|')}|`);
+      for (const c of gc) lines.push(`| ${c.id} | ${factors.map((k) => esc(showInput(spec, k, c))).join(' | ')} | ${esc(showExpected(c))} |`);
+      lines.push('');
+    } else if (kind === 'state') {
+      lines.push(`## ${groupTitle(g)}`, '', ...(summaries[g] ?? []), '');
+    }
+  }
+  lines.push('---', '', `全ケースの一覧は ${srcName.replace(/\.qa\.md$/, '.cases.md')} にあります（差分確認用。通読は不要です）。`, '');
+  return lines.join('\n');
+}
+
+export function emitCasesMd(spec: Spec, res: ExpandResult, srcName: string): string {
+  const { cases } = res;
+  const groups = [...new Set(cases.map(group))];
+  const lines = [
+    ...header(srcName, '差分確認用'),
+    `# ${spec.feature} — 全ケース一覧`,
+    '',
+    '> 仕様を変えたときに、どのケースが増えた・減った・変わったかを PR の差分で確かめるためのファイルです。通読は不要です。要約は summary.md を見てください。',
+    '',
+  ];
+  if (Object.keys(spec.inputs).length) {
+    lines.push(`既定値: ${Object.keys(spec.inputs).map((k) => `${k}=${fmt(spec.base[k])}`).join(', ')}。各行には既定値から変えた入力だけを書きます。`, '');
+  }
+  for (const g of groups) {
+    const gc = cases.filter((c) => group(c) === g);
+    lines.push(`## ${groupTitle(g)}（${gc.length}）`, '');
     if (gc[0].steps) {
-      // 状態遷移: 経路と、最後のイベント後の期待値
-      lines.push(`| ID | 種類 | 経路 | ${outCols.map((o) => `=> ${o}`).join(' | ')} | 備考 |`);
-      lines.push(`|${Array(4 + outCols.length).fill('---').join('|')}|`);
+      lines.push('| ID | 操作 | 期待値 |', '|---|---|---|');
       for (const c of gc) {
         const steps = c.steps!;
         const head = steps.length - (c.focus ?? 1);
         const path = steps.map((s, i) => (i >= head ? `**${s.event}**` : s.event)).join(' → ');
-        lines.push(`| ${esc(c.id)} | ${c.source.split(' / ')[1]} | ${path} | ${outCols.map((o) => fmt(c.expected[o])).join(' | ')} | ${esc(c.note)} |`);
+        lines.push(`| ${esc(c.id)} | ${path} | ${esc(showExpected(c))} |`);
       }
-      lines.push('', '太字 = 検査対象のイベント。それより前は初期状態からその状態へ行くための経路で、途中の状態も検査します', '');
+      lines.push('', '太字 = 検査するイベント。その前はそこへ行くための操作で、途中の状態も検査します', '');
       continue;
     }
-    lines.push(`| ID | 行 | ${inCols.join(' | ')} | ${outCols.map((o) => `=> ${o}`).join(' | ')} | 備考 |`);
-    lines.push(`|${Array(3 + inCols.length + outCols.length).fill('---').join('|')}|`);
-    for (const c of gc) {
-      const ins = inCols.map((k) => {
-        const v = c.input[k];
-        const def = spec.inputs[k];
-        // 定義どおりの値はそのまま、型や値が外れたもの（同値分割の無効クラス）は JSON で見せる
-        const plain =
-          (def.type === 'enum' && typeof v === 'string' && def.values.includes(v)) ||
-          (def.type === 'bool' && typeof v === 'boolean') ||
-          (def.type === 'int' && typeof v === 'number' && Number.isInteger(v));
-        const s = !(k in c.input) ? '(なし)' : plain ? fmt(v) : JSON.stringify(v);
-        return c.input[k] !== spec.base[k] || !(k in c.input) ? `**${esc(s)}**` : esc(s);
-      });
-      lines.push(`| ${esc(c.id)} | ${esc(c.source.split(' / ')[1] ?? '')} | ${ins.join(' | ')} | ${outCols.map((o) => fmt(c.expected[o])).join(' | ')} | ${esc(c.note)} |`);
-    }
-    lines.push('', '太字 = 既定値から変えた入力。(なし) = そのキーを送らない', '');
+    lines.push('| ID | 入力 | 期待値 |', '|---|---|---|');
+    for (const c of gc) lines.push(`| ${esc(c.id)} | ${esc(changedInputs(spec, c))} | ${esc(showExpected(c))} |`);
+    lines.push('');
   }
   return lines.join('\n');
 }
