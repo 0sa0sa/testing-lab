@@ -23,7 +23,8 @@ for (const file of targets.flatMap(collect)) {
   const diags: Diagnostic[] = [];
   const rel = relative(process.cwd(), file);
   const spec = parseSpec(rel, readFileSync(file, 'utf8'), diags);
-  const cases = diags.some((d) => d.level === 'error') ? [] : expand(spec, diags);
+  const res = diags.some((d) => d.level === 'error') ? { cases: [], summaries: {} } : expand(spec, diags);
+  const cases = res.cases;
 
   for (const d of diags) console.log(`${d.level === 'error' ? 'エラー' : '警告'}  ${rel}${d.line ? `:${d.line}` : ''}  ${d.message}`);
   if (diags.some((d) => d.level === 'error')) { failed = true; continue; }
@@ -35,7 +36,7 @@ for (const file of targets.flatMap(collect)) {
   if (!existsSync(bindingPath)) { console.log(`エラー  ${rel}  binding が見つかりません: ${spec.binding}`); failed = true; continue; }
 
   const outputs: [string, string][] = [
-    [join(genDir, `${stem}.cases.md`), emitCasesMd(spec, cases, diags, basename(file))],
+    [join(genDir, `${stem}.cases.md`), emitCasesMd(spec, res, diags, basename(file))],
     [join(genDir, `${stem}.test.ts`), emitTest(spec, cases, './' + relative(genDir, bindingPath).replace(/^\.\//, ''), basename(file))],
   ];
   for (const [path, content] of outputs) {
