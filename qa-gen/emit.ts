@@ -80,9 +80,19 @@ export function emitSummaryMd(spec: Spec, res: ExpandResult, diags: Diagnostic[]
     if (kind === 'pairwise') {
       lines.push(`## ${groupTitle(g)}`, '', ...(summaries[g] ?? []), '');
       const factors = Object.keys(spec.inputs).filter((k) => gc.some((c) => c.input[k] !== spec.base[k]));
-      lines.push(`| # | ${factors.join(' | ')} | 期待値 |`, `|${Array(factors.length + 2).fill('---').join('|')}|`);
-      for (const c of gc) lines.push(`| ${c.id} | ${factors.map((k) => esc(showInput(spec, k, c))).join(' | ')} | ${esc(showExpected(c))} |`);
-      lines.push('');
+      const info = res.pairwiseInfo[g];
+      lines.push(`| # | ${factors.join(' | ')} | 新しく満たした組 | 期待値 |`, `|${Array(factors.length + 3).fill('---').join('|')}|`);
+      gc.forEach((c, k) => {
+        // 区間名（有料 など）と、実際に送る代表値を併記する
+        const shown = factors.map((k2) => {
+          const level = c.note.split(', ').find((s) => s.startsWith(`${k2}=`))?.slice(k2.length + 1);
+          const v = esc(showInput(spec, k2, c));
+          return level && level !== v && spec.inputs[k2].type === 'int' ? `${level}（${v}）` : v;
+        });
+        lines.push(`| ${c.id} | ${shown.join(' | ')} | ${info?.gains[k] ?? ''} | ${esc(showExpected(c))} |`);
+      });
+      lines.push('', '整数の入力は区間名と、実際に送る代表値（区間の中央）を書いています。期待値はディシジョンテーブルから引いています。', '');
+      if (info) lines.push(...info.details, '');
     } else if (kind === 'state') {
       lines.push(`## ${groupTitle(g)}`, '', ...(summaries[g] ?? []), '');
     }

@@ -23,7 +23,7 @@ for (const file of targets.flatMap(collect)) {
   const diags: Diagnostic[] = [];
   const rel = relative(process.cwd(), file);
   const spec = parseSpec(rel, readFileSync(file, 'utf8'), diags);
-  const res = diags.some((d) => d.level === 'error') ? { cases: [], summaries: {} } : expand(spec, diags);
+  const res = diags.some((d) => d.level === 'error') ? { cases: [], summaries: {}, pairwiseInfo: {} } : expand(spec, diags);
   const cases = res.cases;
 
   for (const d of diags) console.log(`${d.level === 'error' ? 'エラー' : '警告'}  ${rel}${d.line ? `:${d.line}` : ''}  ${d.message}`);

@@ -162,7 +162,18 @@ function checkEquivalence(spec: Spec, et: EquivalenceTable, dom: Record<string, 
 // ---------------------------------------------------------------- ペアワイズ
 
 /** 貪欲法: 全組み合わせの候補から、未カバーのペアを最も多く埋める行を順に選ぶ（決定的） */
-export function pairwise(levels: string[][]): { rows: string[][]; pairs: number; full: number } {
+export interface PairwiseResult {
+  rows: string[][];
+  pairs: number;
+  full: number;
+  candidates: string[][];
+  /** 選んだ各行が新しく満たした組の数 */
+  gains: number[];
+  /** 下限: 最も組の多い 2 入力の組数（1 件で 1 組しか満たせない） */
+  lowerBound: number;
+}
+
+export function pairwise(levels: string[][]): PairwiseResult {
   const n = levels.length;
   const full = levels.reduce((a, l) => a * l.length, 1);
   const uncovered = new Set<string>();
@@ -175,6 +186,7 @@ export function pairwise(levels: string[][]): { rows: string[][]; pairs: number;
   };
   const candidates = product(levels);
   const rows: string[][] = [];
+  const gains: number[] = [];
   while (uncovered.size > 0) {
     let best = candidates[0];
     let bestScore = -1;
@@ -183,9 +195,12 @@ export function pairwise(levels: string[][]): { rows: string[][]; pairs: number;
       if (s > bestScore) { best = c; bestScore = s; }
     }
     rows.push(best);
+    gains.push(bestScore);
     for (const p of pairsOf(best)) uncovered.delete(p);
   }
-  return { rows, pairs, full };
+  let lowerBound = 0;
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) lowerBound = Math.max(lowerBound, levels[i].length * levels[j].length);
+  return { rows, pairs, full, candidates, gains, lowerBound };
 }
 
 // ---------------------------------------------------------------- 状態遷移
@@ -298,6 +313,7 @@ export function expand(spec: Spec, diags: Diagnostic[]): ExpandResult {
   spec.equivalences.forEach((et) => checkEquivalence(spec, et, dom, diags));
   const cases: Case[] = [];
   const summaries: Record<string, string[]> = {};
+  const pairwiseInfo: ExpandResult['pairwiseInfo'] = {};
   /** 無効クラスのケース。ディシジョンテーブルの領域外なので突き合わせない */
   const outOfDomain = new Set<Case>();
 
@@ -401,10 +417,55 @@ export function expand(spec: Spec, diags: Diagnostic[]): ExpandResult {
         input, expected: {}, note: pt.factors.map((f, j) => `${f.input}=${row[j]}`).join(', '), line: pt.line,
       });
     });
-    summaries[`pairwise: ${pt.name}`] = [
-      `${pt.factors.map((f, j) => `${f.input}（${levels[j].join('/')}）`).join(' × ')} の全 ${res.full} 通りを ${res.rows.length} 件に絞りました。`,
-      `どの 2 つの入力を選んでも、値の組 ${res.pairs} 組がすべて一度は出てきます。期待値はディシジョンテーブルから引いています。`,
+    const g = `pairwise: ${pt.name}`;
+    const names = pt.factors.map((f) => f.input);
+    const pid = (k: number) => `P${String(k + 1).padStart(2, '0')}`;
+    const n = names.length;
+    const pairList: { i: number; j: number; count: number }[] = [];
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) pairList.push({ i, j, count: levels[i].length * levels[j].length });
+    const widest = pairList.filter((p) => p.count === res.lowerBound).map((p) => `${names[p.i]} × ${names[p.j]}`);
+    summaries[g] = [
+      `${pt.factors.map((f, j) => `${f.input}（${levels[j].join('/')}）`).join(' × ')} の全 ${res.full} 通りのうち、${res.rows.length} 件だけを実行します。`,
+      '',
+      '### なぜこの件数で足りるか',
+      '',
+      '1. 目標: どの 2 つの入力を選んでも、その値の組がすべて一度は出てくること（ペアワイズ）。不具合の多くは 1 つの入力か 2 つの入力の組み合わせで起きる、という経験則に基づきます。',
+      `2. 満たすべき組は ${pairList.map((p) => `${names[p.i]} × ${names[p.j]} が ${p.count} 組`).join('、')}で、合計 ${res.pairs} 組です。`,
+      `3. 入力が ${n} 個あるので、1 件のケースで ${(n * (n - 1)) / 2} 組を同時に満たせます。全組み合わせを実行すると、同じ組を何度も確かめることになります。`,
+      `4. 最低件数: ${widest.join('、')} の ${res.lowerBound} 組は、1 件で 1 組しか満たせません。したがって最低 ${res.lowerBound} 件は必要です。`,
+      res.rows.length === res.lowerBound
+        ? `5. 今回は ${res.rows.length} 件で、この最低件数と同じです。これより少ない件数では満たせません。`
+        : `5. 今回は ${res.rows.length} 件です（最低件数は ${res.lowerBound} 件。選び方の都合で、最小とは限りません）。`,
+      `6. 選び方: 全 ${res.full} 通りの中から、まだ満たしていない組を最も多く満たすものを 1 件ずつ選び、${res.pairs} 組がすべて満たされたら止めます。各ケースが新しく満たした組の数は、下の表の「新しく満たした組」に書いてあります（合計 ${res.gains.reduce((a, b) => a + b, 0)} 組）。`,
+      '7. 保証しないこと: 3 つ以上の入力が特定の値で揃ったときだけ起きる不具合。そうした条件が仕様にあるなら、ディシジョンテーブルに書いてください（ディシジョンテーブルは全組み合わせに展開されます）。',
+      '',
+      '### 実行するケース',
     ];
+    const selected = new Map(res.rows.map((row, k) => [row.join('|'), pid(k)]));
+    const covering = (i: number, a: string, j: number, b: string) =>
+      res.rows.map((row, k) => (row[i] === a && row[j] === b ? pid(k) : '')).filter(Boolean);
+    const details = [
+      '<details>',
+      `<summary>全 ${res.full} 通りの一覧（「実行」が空欄のものは実行しません）</summary>`,
+      '',
+      `| # | ${names.join(' | ')} | 実行 |`,
+      `|${Array(n + 2).fill('---').join('|')}|`,
+      ...res.candidates.map((c, k) => `| ${k + 1} | ${c.join(' | ')} | ${selected.get(c.join('|')) ?? ''} |`),
+      '',
+      '</details>',
+      '',
+      '<details>',
+      `<summary>${res.pairs} 組それぞれを満たすケース（すべての行が 1 件以上で埋まっていることの確認）</summary>`,
+      '',
+      '| 入力の組 | 値 | 満たすケース |',
+      '|---|---|---|',
+      ...pairList.flatMap(({ i, j }) =>
+        levels[i].flatMap((a) => levels[j].map((b) => `| ${names[i]} × ${names[j]} | ${a}, ${b} | ${covering(i, a, j, b).join(', ') || '**なし**'} |`)),
+      ),
+      '',
+      '</details>',
+    ];
+    pairwiseInfo[g] = { gains: res.gains, details };
   }
 
   // 表どうしの突き合わせと、期待値の補完
@@ -453,5 +514,5 @@ export function expand(spec: Spec, diags: Diagnostic[]): ExpandResult {
     if (ids.has(c.id)) diags.push({ level: 'error', line: c.line, message: `ケース ID「${c.id}」が重複しています` });
     ids.add(c.id);
   }
-  return { cases, summaries };
+  return { cases, summaries, pairwiseInfo };
 }

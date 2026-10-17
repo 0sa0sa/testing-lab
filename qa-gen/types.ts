@@ -123,6 +123,8 @@ export interface ExpandResult {
   cases: Case[];
   /** cases.md に載せる、表ごとの要約（キー = Case.source の「/」より前） */
   summaries: Record<string, string[]>;
+  /** 組み合わせ（ペアワイズ）: 選んだ各ケースが新しく満たした組の数と、表の後ろに置く詳細 */
+  pairwiseInfo: Record<string, { gains: number[]; details: string[] }>;
 }
 
 export interface Diagnostic {
