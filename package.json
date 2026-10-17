@@ -1,0 +1,21 @@
+{
+  "name": "testing-lab",
+  "version": "1.0.0",
+  "description": "QA DSL prototype: Markdown decision/boundary tables -> generated tests",
+  "scripts": {
+    "qa:gen": "node qa-gen/cli.ts",
+    "qa:check": "node qa-gen/cli.ts --check",
+    "test": "node --test 'qa/generated/*.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "start": "node src/server.ts"
+  },
+  "type": "module",
+  "dependencies": {
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  },
+  "private": true
+}
